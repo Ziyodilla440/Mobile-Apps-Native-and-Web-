@@ -1,0 +1,143 @@
+Q1
+
+KMP does not use a bridge or VM because it compiles code directly to native binaries on each platform. Flutter draws its own UI using Skia or Impeller. React Native communicates with native views through a JS bridge or JSI. Meanwhile, Kotlin Native turns your code into real ARM64 binaries for iOS using LLVM.
+
+Q2
+
+It means both Android and iOS teams waste time rewriting the exact same logic twice in Kotlin and Swift. The three bad results are duplicated bugs, inconsistent behavior between platforms, and having to do double the QA testing.
+
+Q3
+
+Apps usually share between 60% and 80% of their code.
+
+Two shared things are networking clients and business logic rules.
+
+Two things kept native are camera and sensors because they need deep hardware access, and push notifications because each platform has its own delivery service.
+
+Q4
+
+The stable ones are Android, iOS, Desktop, Server, and Web with Kotlin/JS.
+
+The beta one is Web with Kotlin/Wasm.
+
+Beta means it is still maturing, so it is risky to use in production apps right now because things might break or change.
+
+Q5
+
+In commonMain:
+interface Platform { val name: String }
+expect fun getPlatform(): Platform
+
+In androidMain:
+class AndroidPlatform : Platform { override val name = "Android" }
+actual fun getPlatform(): Platform = AndroidPlatform()
+
+In iosMain:
+class IOSPlatform : Platform { override val name = "iOS" }
+actual fun getPlatform(): Platform = IOSPlatform()
+
+Once you paste these, build the project and split your tabs side by side to take the screenshot.
+
+Q6
+
+KMP shares business logic and keeps the UI native, while Compose Multiplatform lets you share the actual UI too.
+
+Compose Multiplatform is stable on Android, iOS, and desktop, but its web target is still beta.
+
+You can use KMP alone by building normal native UIs like SwiftUI, but Compose Multiplatform cannot work alone because it depends entirely on KMP to run on multiple platforms.
+
+Q7
+
+Common code means one single source file that the Kotlin compiler compiles into different platform binaries instead of making copies of it.
+
+You cannot use java.io.File in commonMain because that class comes from the Java JDK. Since commonMain also compiles for iOS and JavaScript where the JDK does not exist, Kotlin blocks it so your build will not fail on those platforms.
+
+Q8
+
+When you add jvm() and iosArm64() to build.gradle.kts and sync, Gradle automatically sets up commonMain plus source sets for each target.
+
+The exact folder names created under src are:
+commonMain
+commonTest
+jvmMain
+jvmTest
+iosArm64Main
+iosArm64Test
+
+Q9
+
+The four properties of a source set are:
+
+1. It has a unique name in the project.
+
+
+2. It holds source files usually in a folder with the same name.
+
+
+3. It defines which targets its code compiles to.
+
+
+4. It sets its own dependencies and compiler settings.
+
+
+
+The difference is that commonMain is the root source set that compiles to all declared targets and only allows shared code. On the other hand, androidMain is a leaf source set that only compiles for Android, so it is allowed to call platform specific Android APIs.
+
+Q10
+
+The merge rule means Kotlin gathers every source set that is labeled for that target and compiles them all together into one program.
+
+The four rules are:
+
+1. You have to declare a target before Kotlin will compile anything for it.
+
+
+2. Shared code belongs in commonMain, and single target code belongs in its own source set.
+
+
+3. Platform source sets unlock platform only APIs.
+
+
+4. Intermediate source sets let you share code between some targets without giving it to all of them.
+
+
+
+For information flow, platform source sets can see and use commonMain, but commonMain can never see or depend on platform source sets.
+
+Q11
+
+In commonMain:
+expect fun currentTimestamp(): Long
+
+In androidMain:
+actual fun currentTimestamp(): Long = System.currentTimeMillis()
+
+In iosMain:
+actual fun currentTimestamp(): Long = platform.Foundation.NSDate().timeIntervalSince1970.toLong()
+
+Once you place these in the project and build, both actual functions resolve to the expect declaration without any errors.
+
+Q12
+
+Add js { browser() } inside the kotlin block in build.gradle.kts and sync the project.
+
+Under the src folder, Gradle automatically generates the jsMain and jsTest folders alongside jvmMain and iosArm64Main without having to configure them by hand.
+
+Q13
+
+In commonMain:
+class Greeting {
+fun greet(): String = "Hello"
+}
+
+In commonTest:
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+class GreetingTest {
+@Test
+fun testGreet() {
+assertEquals("Hello", Greeting().greet())
+}
+}
+
