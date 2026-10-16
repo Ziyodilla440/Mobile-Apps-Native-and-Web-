@@ -1,3 +1,251 @@
+**1. KMP vs. Flutter vs. React Native**
+Flutter bypasses native UI components and draws its own widgets directly onto a canvas through its own rendering engine (Impeller/Skia). React Native runs JavaScript in a separate runtime and talks to real native views across a JS bridge (or JSI). Kotlin Multiplatform doesn't touch the UI by default; instead, shared Kotlin code is compiled directly into a native iOS framework (`.framework` / `.xcframework`) that the iOS app calls just like regular native code.
+
+---
+
+**2. How Kotlin Reaches Each Target**
+
+* **Android:** Compiled to JVM bytecode via `Kotlin/JVM`.
+* **iOS:** Compiled to native machine code (binaries/frameworks) using **`Kotlin/Native`** (backed by LLVM).
+* **Browser:** Reached via two options—`Kotlin/JS` (transpiled to JavaScript) or `Kotlin/Wasm` (compiled to WebAssembly).
+* **Desktop:** Compiled to JVM bytecode via `Kotlin/JVM` (or native binaries via `Kotlin/Native`).
+* **Server:** Compiled to JVM bytecode via `Kotlin/JVM`.
+
+---
+
+**3. Shared (`commonMain`) vs. Kept Native**
+
+* **Ktor API client — Shared (`commonMain`):** Network requests, serialization, and endpoints are identical across platforms, while Ktor swaps out the underlying HTTP engine automatically.
+* **Biometric login — Kept native:** It relies heavily on OS-specific hardware APIs and system prompts (`BiometricPrompt` on Android, `LocalAuthentication` / FaceID on iOS).
+* **Input validation — Shared (`commonMain`):** It is pure business logic (checking strings and regexes) with zero platform dependencies.
+* **Push notifications — Kept native:** Requires tight integration with platform-specific OS services and lifecycle hooks (FCM on Android, APNs on iOS).
+* **SQLDelight storage — Shared (`commonMain`):** Database schemas and queries are 100% identical, requiring only a platform-specific SQLite driver under the hood.
+* **Deep-link navigation — Kept native:** Deep links are intercepted by OS-level entry points (`Intent` filters on Android, Universal Links on iOS) that tie directly into native navigation graphs.
+
+---
+
+**4. Complete the `expect`/`actual` Setup**
+
+```kotlin
+// androidMain
+class AndroidPlatform : Platform {
+    override val name: String = "Android ${android.os.Build.VERSION.SDK_INT}"
+}
+actual fun getPlatform(): Platform = AndroidPlatform()
+
+// iosMain
+import platform.UIKit.UIDevice
+
+class IOSPlatform : Platform {
+    override val name: String = UIDevice.currentDevice.systemName() + " " + UIDevice.currentDevice.systemVersion
+}
+actual fun getPlatform(): Platform = IOSPlatform()
+
+// jvmMain (Desktop)
+class JVMPlatform : Platform {
+    override val name: String = "Java ${System.getProperty("java.version")}"
+}
+actual fun getPlatform(): Platform = JVMPlatform()
+
+```
+
+---
+
+**5. Find and Fix the Error**
+**Error:** An `expect` function in `commonMain` only declares a contract; it cannot have a function body (implementation).
+**Fix:** Remove the body `{ return 0L }` so it is just a signature:
+
+```kotlin
+// commonMain
+expect fun currentTimeMillis(): Long
+
+```
+
+---
+
+**6. Missing `actual` Implementations**
+
+* **What fails:** The iOS compilations (`iosArm64` and `iosSimulatorArm64`) fail at compile time because `commonMain` compiles to every declared target, and the compiler cannot find an `actual` implementation for the iOS targets.
+
+
+* **Two ways to fix it:**
+1. Provide an `actual` implementation inside `iosMain` (which both `iosArm64Main` and `iosSimulatorArm64Main` depend on and inherit from).
+
+
+2. Convert the `expect` function into a regular function with a default implementation in `commonMain` (or use an interface injected per platform) if platform-specific code isn't strictly required on iOS.
+
+
+
+---
+
+**7. Source Set Merging & Visibility**
+
+* **Merged source sets for `iosArm64`:** In a full default hierarchy, the compiler merges `commonMain` -> `nativeMain` -> `appleMain` -> `iosMain` -> `iosArm64Main`.
+
+
+* **Why `appleMain` is visible to iOS but not `androidMain`:** Visibility follows the `dependsOn` hierarchy tree. `iosMain` (and `iosArm64Main`) has a `dependsOn` relation pointing up to `appleMain`, so it observes `appleMain`'s API. `androidMain` branches directly off `commonMain` and does not depend on `appleMain`, making `appleMain` completely invisible to Android.
+
+
+
+---
+
+**8. iOS System Version Function**
+
+```kotlin
+// iosMain
+import platform.UIKit.UIDevice
+
+fun getIosVersion(): String {
+    return UIDevice.currentDevice.systemVersion
+}
+
+```
+
+**Why it cannot live in `commonMain`:** `UIDevice` belongs to Apple's `UIKit` framework (`platform.UIKit.*`), which is only available to iOS targets. Because `commonMain` must compile against all targets (including Android/JVM), platform-specific iOS APIs are not visible or available there.
+
+---
+
+**9. Ktor `sourceSets` Configuration**
+
+```kotlin
+kotlin {
+    sourceSets {
+        commonMain.dependencies {
+            implementation("io.ktor:ktor-client-core:2.3.12")
+        }
+        androidMain.dependencies {
+            implementation("io.ktor:ktor-client-okhttp:2.3.12")
+        }
+        iosMain.dependencies {
+            implementation("io.ktor:ktor-client-darwin:2.3.12")
+        }
+    }
+}
+
+```
+
+---
+
+**10. KMP vs. Compose Multiplatform**
+
+* **Difference:** Kotlin Multiplatform (KMP) is a technology for sharing business logic, data, and non-UI code across platforms, whereas Compose Multiplatform (CMP) is a declarative UI framework built on top of KMP to share the user interface itself.
+* **Module layout for shared logic + native UI:** The project has a `:shared` KMP module (containing `commonMain`, `androidMain`, `iosMain`), an `:androidApp` module built with Jetpack Compose that depends on `:shared` as a regular Gradle dependency, and an `iosApp` Xcode project built with SwiftUI that consumes the compiled framework generated from `:shared`.
+
+
+* **Which can be used without the other:** **KMP** can be used without Compose Multiplatform (you cannot use Compose Multiplatform across platforms without KMP underneath).
+
+---
+
+**11. Stability Levels & Production Readiness**
+
+* **iOS (KMP):** **Stable.** *Ship in production?* **Yes.** It is production-ready, officially supported by JetBrains, and battle-tested by major companies.
+* **Kotlin/Wasm:** **Alpha.** *Ship in production?* **No** (not for critical apps). The specification and tooling are still evolving rapidly, though it's fine for internal demos or experiments.
+* **`expect`/`actual` classes:** **Beta.** *Ship in production?* **Yes, with caution** (or prefer interfaces). While stable enough to work, JetBrains recommends using interfaces or `expect`/`actual` functions where possible because `expect`/`actual` classes have stricter compiler constraints.
+* **Compose Multiplatform for Web:** **Alpha** (powered by Kotlin/Wasm). *Ship in production?* **No.** Canvas-based web rendering still has accessibility, SEO, and browser-compatibility trade-offs that make it risky for consumer web apps today.
+
+---
+
+**12. `commonTest` Unit Test & Gradle Tasks**
+
+```kotlin
+// commonTest
+import kotlin.test.Test
+import kotlin.test.assertTrue
+import kotlin.test.assertFalse
+
+class EmailValidatorTest {
+    @Test
+    fun testValidAndInvalidEmails() {
+        assertTrue(isValidEmail("student@ttpu.uz"))
+        assertFalse(isValidEmail("invalid-email.com"))
+    }
+}
+
+```
+
+* **JVM Gradle task:** `jvmTest` (or `testDebugUnitTest` on Android).
+* **iOS Simulator Gradle task:** `iosSimulatorArm64Test`.
+
+---
+
+**13. Two Limitations of KMP & Mitigations**
+
+1. **Team skills & tooling friction:** With local source distribution or a monorepo, iOS developers are forced to install and learn unfamiliar tools like Gradle, Kotlin, and Android Studio.
+
+
+* *Mitigation:* Use **Remote Artifact Distribution** (publishing a versioned XCFramework via SPM or CocoaPods) or a **Hybrid Workflow** so non-participating iOS developers never have to touch Kotlin or Gradle.
+
+
+
+
+2. **Swift interop & binary size (umbrella bottlenecks):** Kotlin translates to Objective-C headers under the hood (making generics, sealed classes, and coroutines awkward in Swift), and compiling multiple separate KMP modules for iOS duplicates dependencies and bloats binary size.
+
+
+* *Mitigation:* Bundle all shared modules through a single **Umbrella Framework** so dependencies exist only once, and use interop tools like **SKIE** or **KMP-NativeCoroutines** to generate clean Swift APIs for Flows, suspend functions, and sealed classes.
+
+
+
+
+
+---
+
+**14. `LoginValidator` in `commonMain` and Platform Consumption**
+
+```kotlin
+// commonMain
+class LoginValidator {
+    fun isEmailValid(email: String): Boolean =
+        email.contains("@") && email.contains(".")
+
+    fun isPasswordValid(password: String): Boolean =
+        password.length >= 8
+}
+
+```
+
+```kotlin
+// Android ViewModel (androidApp)
+import androidx.lifecycle.ViewModel
+
+class LoginViewModel : ViewModel() {
+    private val validator = LoginValidator()
+
+    fun validate(email: String, pass: String): Boolean {
+        return validator.isEmailValid(email) && validator.isPasswordValid(pass)
+    }
+}
+
+```
+
+```swift
+// SwiftUI ViewModel (iosApp)
+import Foundation
+import Shared
+
+class IosLoginViewModel: ObservableObject {
+    private let validator = LoginValidator()
+
+    func validate(email: String, pass: String) -> Bool {
+        return validator.isEmailValid(email: email) && validator.isPasswordValid(password: pass)
+    }
+}
+
+```
+
+---
+
+**15. Layer Migration Order for an Existing Android App**
+
+* **Order of migration:**
+1. **Data models** (DTOs / domain entities)
+2. **Business rules** (validation, use cases, calculations)
+3. **Networking** (API calls with Ktor, serialization)
+4. **Local storage** (caching/databases with SQLDelight or Room KMP)
+5. **UI** (kept native or migrated last)
+
+
+**Part B — KMP Project Configuration (16–30)
+
 **1. Single Shared Module vs. Several Shared Modules**
 
 * **Single Shared Module:**
@@ -213,7 +461,14 @@ kotlin {
 * App A umbrella -> App A (Android + iOS)
 * App B umbrella -> App B (Android + iOS)
 
-14. Pick a Configuration**
+
+
+
+* **Why each gets its own umbrella:** If two apps use different subsets of libraries, each app needs its own umbrella repository pulling in only the specific libraries it needs to avoid duplicate dependencies and bloat.
+
+
+
+**14. Pick a Configuration**
 
 * **Solo developer with a small app:** Monorepo + single shared module + local distribution. *Reason:* Easiest setup with zero publishing or versioning overhead.
 * **Four engineers releasing together:** Monorepo + several shared modules (with umbrella) + local distribution. *Reason:* Keeps everyone in sync without versioning friction, but modularizes code for faster build times.
@@ -227,251 +482,4 @@ kotlin {
 4. Inside the iOS `framework` block of the umbrella module, call `export(project(":feature:..."))` for each feature module.
 5. Because the umbrella framework still outputs the exact same `Shared` name and exports all the underlying APIs, the iOS app can consume it without changing a single line of Swift code.
 
-
-
-**1. KMP vs. Flutter vs. React Native**
-Flutter bypasses native UI components and draws its own widgets directly onto a canvas through its own rendering engine (Impeller/Skia). React Native runs JavaScript in a separate runtime and talks to real native views across a JS bridge (or JSI). Kotlin Multiplatform doesn't touch the UI by default; instead, shared Kotlin code is compiled directly into a native iOS framework (`.framework` / `.xcframework`) that the iOS app calls just like regular native code.
-
 ---
-
-**2. How Kotlin Reaches Each Target**
-
-* **Android:** Compiled to JVM bytecode via `Kotlin/JVM`.
-* **iOS:** Compiled to native machine code (binaries/frameworks) using **`Kotlin/Native`** (backed by LLVM).
-* **Browser:** Reached via two options—`Kotlin/JS` (transpiled to JavaScript) or `Kotlin/Wasm` (compiled to WebAssembly).
-* **Desktop:** Compiled to JVM bytecode via `Kotlin/JVM` (or native binaries via `Kotlin/Native`).
-* **Server:** Compiled to JVM bytecode via `Kotlin/JVM`.
-
----
-
-**3. Shared (`commonMain`) vs. Kept Native**
-
-* **Ktor API client — Shared (`commonMain`):** Network requests, serialization, and endpoints are identical across platforms, while Ktor swaps out the underlying HTTP engine automatically.
-* **Biometric login — Kept native:** It relies heavily on OS-specific hardware APIs and system prompts (`BiometricPrompt` on Android, `LocalAuthentication` / FaceID on iOS).
-* **Input validation — Shared (`commonMain`):** It is pure business logic (checking strings and regexes) with zero platform dependencies.
-* **Push notifications — Kept native:** Requires tight integration with platform-specific OS services and lifecycle hooks (FCM on Android, APNs on iOS).
-* **SQLDelight storage — Shared (`commonMain`):** Database schemas and queries are 100% identical, requiring only a platform-specific SQLite driver under the hood.
-* **Deep-link navigation — Kept native:** Deep links are intercepted by OS-level entry points (`Intent` filters on Android, Universal Links on iOS) that tie directly into native navigation graphs.
-
----
-
-**4. Complete the `expect`/`actual` Setup**
-
-```kotlin
-// androidMain
-class AndroidPlatform : Platform {
-    override val name: String = "Android ${android.os.Build.VERSION.SDK_INT}"
-}
-actual fun getPlatform(): Platform = AndroidPlatform()
-
-// iosMain
-import platform.UIKit.UIDevice
-
-class IOSPlatform : Platform {
-    override val name: String = UIDevice.currentDevice.systemName() + " " + UIDevice.currentDevice.systemVersion
-}
-actual fun getPlatform(): Platform = IOSPlatform()
-
-// jvmMain (Desktop)
-class JVMPlatform : Platform {
-    override val name: String = "Java ${System.getProperty("java.version")}"
-}
-actual fun getPlatform(): Platform = JVMPlatform()
-
-```
-
----
-
-**5. Find and Fix the Error**
-**Error:** An `expect` function in `commonMain` only declares a contract; it cannot have a function body (implementation).
-**Fix:** Remove the body `{ return 0L }` so it is just a signature:
-
-```kotlin
-// commonMain
-expect fun currentTimeMillis(): Long
-
-```
-
----
-
-**6. Missing `actual` Implementations**
-
-* **What fails:** The iOS compilations (`iosArm64` and `iosSimulatorArm64`) fail at compile time because `commonMain` compiles to every declared target, and the compiler cannot find an `actual` implementation for the iOS targets.
-
-
-* **Two ways to fix it:**
-1. Provide an `actual` implementation inside `iosMain` (which both `iosArm64Main` and `iosSimulatorArm64Main` depend on and inherit from).
-
-
-2. Convert the `expect` function into a regular function with a default implementation in `commonMain` (or use an interface injected per platform) if platform-specific code isn't strictly required on iOS.
-
-
-
----
-
-**7. Source Set Merging & Visibility**
-
-* **Merged source sets for `iosArm64`:** In a full default hierarchy, the compiler merges `commonMain` -> `nativeMain` -> `appleMain` -> `iosMain` -> `iosArm64Main`.
-
-
-* **Why `appleMain` is visible to iOS but not `androidMain`:** Visibility follows the `dependsOn` hierarchy tree. `iosMain` (and `iosArm64Main`) has a `dependsOn` relation pointing up to `appleMain`, so it observes `appleMain`'s API. `androidMain` branches directly off `commonMain` and does not depend on `appleMain`, making `appleMain` completely invisible to Android.
-
-
-
----
-
-**8. iOS System Version Function**
-
-```kotlin
-// iosMain
-import platform.UIKit.UIDevice
-
-fun getIosVersion(): String {
-    return UIDevice.currentDevice.systemVersion
-}
-
-```
-
-**Why it cannot live in `commonMain`:** `UIDevice` belongs to Apple's `UIKit` framework (`platform.UIKit.*`), which is only available to iOS targets. Because `commonMain` must compile against all targets (including Android/JVM), platform-specific iOS APIs are not visible or available there.
-
----
-
-**9. Ktor `sourceSets` Configuration**
-
-```kotlin
-kotlin {
-    sourceSets {
-        commonMain.dependencies {
-            implementation("io.ktor:ktor-client-core:2.3.12")
-        }
-        androidMain.dependencies {
-            implementation("io.ktor:ktor-client-okhttp:2.3.12")
-        }
-        iosMain.dependencies {
-            implementation("io.ktor:ktor-client-darwin:2.3.12")
-        }
-    }
-}
-
-```
-
----
-
-**10. KMP vs. Compose Multiplatform**
-
-* **Difference:** Kotlin Multiplatform (KMP) is a technology for sharing business logic, data, and non-UI code across platforms, whereas Compose Multiplatform (CMP) is a declarative UI framework built on top of KMP to share the user interface itself.
-* **Module layout for shared logic + native UI:** The project has a `:shared` KMP module (containing `commonMain`, `androidMain`, `iosMain`), an `:androidApp` module built with Jetpack Compose that depends on `:shared` as a regular Gradle dependency, and an `iosApp` Xcode project built with SwiftUI that consumes the compiled framework generated from `:shared`.
-
-
-* **Which can be used without the other:** **KMP** can be used without Compose Multiplatform (you cannot use Compose Multiplatform across platforms without KMP underneath).
-
----
-
-**11. Stability Levels & Production Readiness**
-
-* **iOS (KMP):** **Stable.** *Ship in production?* **Yes.** It is production-ready, officially supported by JetBrains, and battle-tested by major companies.
-* **Kotlin/Wasm:** **Alpha.** *Ship in production?* **No** (not for critical apps). The specification and tooling are still evolving rapidly, though it's fine for internal demos or experiments.
-* **`expect`/`actual` classes:** **Beta.** *Ship in production?* **Yes, with caution** (or prefer interfaces). While stable enough to work, JetBrains recommends using interfaces or `expect`/`actual` functions where possible because `expect`/`actual` classes have stricter compiler constraints.
-* **Compose Multiplatform for Web:** **Alpha** (powered by Kotlin/Wasm). *Ship in production?* **No.** Canvas-based web rendering still has accessibility, SEO, and browser-compatibility trade-offs that make it risky for consumer web apps today.
-
----
-
-**12. `commonTest` Unit Test & Gradle Tasks**
-
-```kotlin
-// commonTest
-import kotlin.test.Test
-import kotlin.test.assertTrue
-import kotlin.test.assertFalse
-
-class EmailValidatorTest {
-    @Test
-    fun testValidAndInvalidEmails() {
-        assertTrue(isValidEmail("student@ttpu.uz))
-        assertFalse(isValidEmail("invalid-email.com"))
-    }
-}
-
-```
-
-* **JVM Gradle task:** `jvmTest` (or `testDebugUnitTest` on Android).
-* **iOS Simulator Gradle task:** `iosSimulatorArm64Test`.
-
----
-
-**13. Two Limitations of KMP & Mitigations**
-
-1. **Team skills & tooling friction:** With local source distribution or a monorepo, iOS developers are forced to install and learn unfamiliar tools like Gradle, Kotlin, and Android Studio.
-
-
-* *Mitigation:* Use **Remote Artifact Distribution** (publishing a versioned XCFramework via SPM or CocoaPods) or a **Hybrid Workflow** so non-participating iOS developers never have to touch Kotlin or Gradle.
-
-
-
-
-2. **Swift interop & binary size (umbrella bottlenecks):** Kotlin translates to Objective-C headers under the hood (making generics, sealed classes, and coroutines awkward in Swift), and compiling multiple separate KMP modules for iOS duplicates dependencies and bloats binary size.
-
-
-* *Mitigation:* Bundle all shared modules through a single **Umbrella Framework** so dependencies exist only once, and use interop tools like **SKIE** or **KMP-NativeCoroutines** to generate clean Swift APIs for Flows, suspend functions, and sealed classes.
-
-
-
-
-
----
-
-**14. `LoginValidator` in `commonMain` and Platform Consumption**
-
-```kotlin
-// commonMain
-class LoginValidator {
-    fun isEmailValid(email: String): Boolean =
-        email.contains("@") && email.contains(".")
-
-    fun isPasswordValid(password: String): Boolean =
-        password.length >= 8
-}
-
-```
-
-```kotlin
-// Android ViewModel (androidApp)
-import androidx.lifecycle.ViewModel
-
-class LoginViewModel : ViewModel() {
-    private val validator = LoginValidator()
-
-    fun validate(email: String, pass: String): Boolean {
-        return validator.isEmailValid(email) && validator.isPasswordValid(pass)
-    }
-}
-
-```
-
-```swift
-// SwiftUI ViewModel (iosApp)
-import Foundation
-import Shared
-
-class IosLoginViewModel: ObservableObject {
-    private let validator = LoginValidator()
-
-    func validate(email: String, pass: String) -> Bool {
-        return validator.isEmailValid(email: email) && validator.isPasswordValid(password: pass)
-    }
-}
-
-```
-
----
-
-**15. Layer Migration Order for an Existing Android App**
-
-* **Order of migration:**
-1. **Data models** (DTOs / domain entities)
-2. **Business rules** (validation, use cases, calculations)
-3. **Networking** (API calls with Ktor, serialization)
-4. **Local storage** (caching/databases with SQLDelight or Room KMP)
-5. **UI** (kept native or migrated last)
-
-
