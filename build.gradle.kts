@@ -1,0 +1,4 @@
+allprojects {
+    group = "com.practice4"
+    version = "1.0.0"
+}
