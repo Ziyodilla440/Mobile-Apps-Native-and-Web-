@@ -1,7 +1,3 @@
-plugins {
-    id("org.jetbrains.kotlin.multiplatform") version "1.9.20"
-}
-
 kotlin {
     jvm()
     js(IR) {
@@ -11,13 +7,23 @@ kotlin {
 
     sourceSets {
         val commonMain by getting
-        val jvmMain by getting
-        val jsMain by getting
+
+        // Create the custom intermediate source set
         val jvmAndJsMain by creating {
             dependsOn(commonMain)
         }
 
-        jvmMain.dependsOn(jvmAndJsMain)
-        jsMain.dependsOn(jvmAndJsMain)
+        val jvmMain by getting {
+            dependsOn(jvmAndJsMain)
+        }
+
+        val jsMain by getting {
+            dependsOn(jvmAndJsMain)
+        }
     }
+}
+
+
+fun greetingFromJvmAndJs(): String {
+    return "Shared between JVM and JS only!"
 }
