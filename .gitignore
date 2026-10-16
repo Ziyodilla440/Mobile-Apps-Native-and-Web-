@@ -1,0 +1,16 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+out/
+
+# Kotlin/Native
+.konan/
+
+# OS files
+.DS_Store
+Thumbs.db
